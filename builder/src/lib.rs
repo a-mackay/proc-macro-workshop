@@ -4,6 +4,52 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput, Data, Fields, Field};
 
+fn is_option_type(ty: &syn::Type) -> bool {
+    use syn::{Type, TypePath, Path, PathSegment, PathArguments, AngleBracketedGenericArguments, GenericArgument};
+
+    match ty {
+        Type::Path(TypePath {
+            qself: None,
+            path: Path {
+                segments, ..
+            },
+        }) => {
+            if segments.len() == 1 {
+                match segments.first().unwrap() {
+                    PathSegment { ident, arguments, .. } => {
+                        if ident.to_string() == "Option" {
+                            match arguments {
+                                PathArguments::AngleBracketed(ab_gen_args) => {
+                                    match ab_gen_args {
+                                        AngleBracketedGenericArguments { args, .. } => {
+                                            if args.len() == 1 {
+                                                match args.first().unwrap() {
+                                                    GenericArgument::Type(_) => true,
+                                                    _ => false,
+                                                }
+                                            } else {
+                                                false
+                                            }
+                                        },
+                                        _ => false,
+                                    }
+                                },
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
