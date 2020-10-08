@@ -15,32 +15,23 @@ fn is_option_type(ty: &syn::Type) -> bool {
             },
         }) => {
             if segments.len() == 1 {
-                match segments.first().unwrap() {
-                    PathSegment { ident, arguments, .. } => {
-                        if ident.to_string() == "Option" {
-                            match arguments {
-                                PathArguments::AngleBracketed(ab_gen_args) => {
-                                    match ab_gen_args {
-                                        AngleBracketedGenericArguments { args, .. } => {
-                                            if args.len() == 1 {
-                                                match args.first().unwrap() {
-                                                    GenericArgument::Type(_) => true,
-                                                    _ => false,
-                                                }
-                                            } else {
-                                                false
-                                            }
-                                        },
-                                        _ => false,
-                                    }
-                                },
-                                _ => false,
+                let PathSegment { ident, arguments, .. } = segments.first().unwrap();
+                if ident.to_string() == "Option" {
+                    match arguments {
+                        PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => {
+                            if args.len() == 1 {
+                                match args.first().unwrap() {
+                                    GenericArgument::Type(_) => true,
+                                    _ => false,
+                                }
+                            } else {
+                                false
                             }
-                        } else {
-                            false
-                        }
+                        },
+                        _ => false,
                     }
-                    _ => false,
+                } else {
+                    false
                 }
             } else {
                 false
