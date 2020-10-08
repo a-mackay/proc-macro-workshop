@@ -5,6 +5,10 @@ use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput, Data, Fields, Field};
 
 fn is_option_type(ty: &syn::Type) -> bool {
+    get_type_within_option(ty).is_some()
+}
+
+fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
     use syn::{Type, TypePath, Path, PathSegment, PathArguments, AngleBracketedGenericArguments, GenericArgument};
 
     match ty {
@@ -21,23 +25,23 @@ fn is_option_type(ty: &syn::Type) -> bool {
                         PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => {
                             if args.len() == 1 {
                                 match args.first().unwrap() {
-                                    GenericArgument::Type(_) => true,
-                                    _ => false,
+                                    GenericArgument::Type(inner_type) => Some(inner_type.clone()),
+                                    _ => None,
                                 }
                             } else {
-                                false
+                                None
                             }
                         },
-                        _ => false,
+                        _ => None,
                     }
                 } else {
-                    false
+                    None
                 }
             } else {
-                false
+                None
             }
         },
-        _ => false,
+        _ => None,
     }
 }
 
@@ -59,55 +63,80 @@ pub fn derive(input: TokenStream) -> TokenStream {
         _ => panic!("this derive proc macro only supports structs"),
     };
 
-    let mut builder_fields = vec![];
-    let mut builder_methods = vec![];
-    let mut field_names = vec![];
+    let mut man_builder_fields = vec![]; // Mandatory fields
+    let mut opt_builder_fields = vec![]; // Optional fields
+    let mut man_builder_methods = vec![];
+    let mut opt_builder_methods = vec![];
+    let mut man_field_names = vec![];
+    let mut opt_field_names = vec![];
 
     for field in fields.iter() {
         let field_type = field.ty.clone();
         let field_name = field.ident.clone().expect("expected field to have an ident");
 
-        let builder_field = quote! {
-            #field_name: Option<#field_type>
-        };
-        builder_fields.push(builder_field);
+        if !is_option_type(&field_type) {
+            let builder_field = quote! {
+                #field_name: Option<#field_type>
+            };
+            man_builder_fields.push(builder_field);
 
-        let builder_method = quote! {
-            fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
-                self.#field_name = Some(#field_name);
-                self
-            }
-        };
-        builder_methods.push(builder_method);
+            let builder_method = quote! {
+                fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
+                    self.#field_name = Some(#field_name);
+                    self
+                }
+            };
+            man_builder_methods.push(builder_method);
 
-        field_names.push(field_name);
+            man_field_names.push(field_name);
+        } else {
+            let inner_type = get_type_within_option(&field_type).unwrap();
+            let builder_field = quote! {
+                #field_name: #field_type
+            };
+            opt_builder_fields.push(builder_field);
+
+            let builder_method = quote! {
+                fn #field_name(&mut self, #field_name: #inner_type) -> &mut Self {
+                    self.#field_name = Some(#field_name);
+                    self
+                }
+            };
+            opt_builder_methods.push(builder_method);
+
+            opt_field_names.push(field_name);
+        }
     }
 
     let output = quote! {
         pub struct #builder_name {
-            #(#builder_fields),*
+            #(#man_builder_fields,)*
+            #(#opt_builder_fields,)*
         }
 
         impl #builder_name {
             fn new() -> Self {
                 Self {
-                    #( #field_names: None ),*
+                    #( #man_field_names: None, )*
+                    #( #opt_field_names: None, )*
                 }
             }
 
-            #(#builder_methods)*
+            #(#man_builder_methods)*
+            #(#opt_builder_methods)*
         }
 
         impl #builder_name {
             fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
                 #(
-                    if self.#field_names.is_none() {
-                        let msg = format!("Missing field {}", stringify!(#field_names));
+                    if self.#man_field_names.is_none() {
+                        let msg = format!("Missing field {}", stringify!(#man_field_names));
                         return Err(Box::from(msg))
                     }
                 );*
                 Ok(#struct_name {
-                    #( #field_names: self.#field_names.clone().unwrap() ),*
+                    #( #man_field_names: self.#man_field_names.clone().unwrap(), )*
+                    #( #opt_field_names: self.#opt_field_names.clone(), )*
                 })
             }
         }
