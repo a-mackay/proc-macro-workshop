@@ -8,7 +8,7 @@ fn is_option_type(ty: &syn::Type) -> bool {
     get_type_within_option(ty).is_some()
 }
 
-fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
+fn get_type_within(ty: &syn::Type, outer_type_name: &str) -> Option<syn::Type> {
     use syn::{Type, TypePath, Path, PathSegment, PathArguments, AngleBracketedGenericArguments, GenericArgument};
 
     match ty {
@@ -20,7 +20,7 @@ fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
         }) => {
             if segments.len() == 1 {
                 let PathSegment { ident, arguments, .. } = segments.first().unwrap();
-                if ident.to_string() == "Option" {
+                if ident.to_string() == outer_type_name {
                     match arguments {
                         PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) => {
                             if args.len() == 1 {
@@ -45,8 +45,12 @@ fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
     }
 }
 
-fn has_fn_name(field: &syn::Field) -> bool {
-    get_fn_name(field).is_some()
+fn get_type_within_vec(ty: &syn::Type) -> Option<syn::Type> {
+    get_type_within(ty, "Vec")
+}
+
+fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
+    get_type_within(ty, "Option")
 }
 
 fn get_fn_name(field: &syn::Field) -> Option<proc_macro2::Literal> {
@@ -65,27 +69,23 @@ fn get_fn_name(field: &syn::Field) -> Option<proc_macro2::Literal> {
 fn get_fn_name_from_attr(attr: &syn::Attribute) -> Option<proc_macro2::Literal> {
     use syn::Attribute;
 
-    match attr {
-        Attribute { path, tokens, .. } => {
-            match path.get_ident() {
-                Some(ident) => {
-                    if ident.to_string() == "builder" {
-                        eprintln!("hello");
-                        let tokens: proc_macro2::TokenStream = tokens.clone();
-                        let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
-                        if tokens.len() != 1 {
-                            None
-                        } else {
-                            let tt = tokens[0].clone();
-                            get_fn_name_from_token_tree(&tt)
-                        }
-                    } else {
-                        None
-                    }
-                },
-                _ => None,
+    let Attribute { path, tokens, .. } = attr;
+
+    match path.get_ident() {
+        Some(ident) => {
+            if ident.to_string() == "builder" {
+                let tokens: proc_macro2::TokenStream = tokens.clone();
+                let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+                if tokens.len() != 1 {
+                    None
+                } else {
+                    let tt = tokens[0].clone();
+                    get_fn_name_from_token_tree(&tt)
+                }
+            } else {
+                None
             }
-        }
+        },
         _ => None,
     }
 }
@@ -99,7 +99,6 @@ fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Option<proc_macro
         if ts.len() != 3 {
             None
         } else {
-            eprintln!("tokens length");
             let token1 = ts[0].clone();
             let token2 = ts[1].clone();
             let token3 = ts[2].clone();
@@ -109,7 +108,6 @@ fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Option<proc_macro
                     if let TokenTree::Punct(punct) = token2 {
                         if punct.as_char() == '=' {
                             if let TokenTree::Literal(lit) = token3 {
-                                eprintln!("{:#?}", lit);
                                 Some(lit)
                             } else {
                                 None
@@ -150,24 +148,39 @@ pub fn derive(input: TokenStream) -> TokenStream {
         _ => panic!("this derive proc macro only supports structs"),
     };
 
-    let mut man_builder_fields = vec![]; // Mandatory fields
-    let mut opt_builder_fields = vec![]; // Optional fields
-    let mut man_builder_methods = vec![];
-    let mut opt_builder_methods = vec![];
-    let mut man_field_names = vec![];
-    let mut opt_field_names = vec![];
+    let mut builder_fields = vec![];
+    let mut builder_methods = vec![];
+    let mut man_field_names = vec![]; // Mandatory fields
+    let mut opt_field_names = vec![]; // Optional fields
 
     for field in fields.iter() {
         let field_type = field.ty.clone();
         let field_name = field.ident.clone().expect("expected field to have an ident");
 
-        has_fn_name(&field);
+        let user_defined_each_fn_name = get_fn_name(&field);
+        let user_defined_each_fn_name_str: Option<String> = user_defined_each_fn_name.clone().map(|lit| {
+            lit.to_string().chars().filter(|&c| c != '\"').collect()
+        });
+        // eprintln!("{:?}", field_name.to_string());
+        let create_builder_method = user_defined_each_fn_name.is_none() || user_defined_each_fn_name_str != Some(field_name.to_string());
+
+        if let Some(fn_name) = user_defined_each_fn_name_str {
+            let fn_name = format_ident!("{}", fn_name);
+            let inner_type = get_type_within_vec(&field_type).expect("Expected a type like Vec<...> for 'each = ...' attribute");
+            let each_builder_method = quote! {
+                fn #fn_name(&mut self, item: #inner_type) -> &mut Self {
+                    self.#field_name.push(item);
+                    self
+                }
+            };
+            builder_methods.push(each_builder_method);
+        }
 
         if !is_option_type(&field_type) {
             let builder_field = quote! {
                 #field_name: Option<#field_type>
             };
-            man_builder_fields.push(builder_field);
+            builder_fields.push(builder_field);
 
             let builder_method = quote! {
                 fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
@@ -175,7 +188,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     self
                 }
             };
-            man_builder_methods.push(builder_method);
+            if create_builder_method {
+                builder_methods.push(builder_method);
+            }
 
             man_field_names.push(field_name);
         } else {
@@ -183,7 +198,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             let builder_field = quote! {
                 #field_name: #field_type
             };
-            opt_builder_fields.push(builder_field);
+            builder_fields.push(builder_field);
 
             let builder_method = quote! {
                 fn #field_name(&mut self, #field_name: #inner_type) -> &mut Self {
@@ -191,7 +206,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     self
                 }
             };
-            opt_builder_methods.push(builder_method);
+            if create_builder_method {
+                builder_methods.push(builder_method);
+            }
 
             opt_field_names.push(field_name);
         }
@@ -199,8 +216,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let output = quote! {
         pub struct #builder_name {
-            #(#man_builder_fields,)*
-            #(#opt_builder_fields,)*
+            #(#builder_fields,)*
         }
 
         impl #builder_name {
@@ -211,8 +227,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             }
 
-            #(#man_builder_methods)*
-            #(#opt_builder_methods)*
+            #( #builder_methods )*
         }
 
         impl #builder_name {
