@@ -8,6 +8,10 @@ fn is_option_type(ty: &syn::Type) -> bool {
     get_type_within_option(ty).is_some()
 }
 
+fn is_vec_type(ty: &syn::Type) -> bool {
+    get_type_within_vec(ty).is_some()
+}
+
 fn get_type_within(ty: &syn::Type, outer_type_name: &str) -> Option<syn::Type> {
     use syn::{Type, TypePath, Path, PathSegment, PathArguments, AngleBracketedGenericArguments, GenericArgument};
 
@@ -130,6 +134,22 @@ fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Option<proc_macro
     }
 }
 
+enum FieldType {
+    Normal,
+    Vec,
+    Option,
+}
+
+fn decide_field_type(ty: &syn::Type) -> FieldType {
+    let results = (is_option_type(ty), is_vec_type(ty));
+    match results {
+        (true, false) => FieldType::Option,
+        (false, true) => FieldType::Vec,
+        (false, false) => FieldType::Normal,
+        (true, true) => unreachable!(),
+    }
+}
+
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -150,8 +170,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let mut builder_fields = vec![];
     let mut builder_methods = vec![];
-    let mut man_field_names = vec![]; // Mandatory fields
-    let mut opt_field_names = vec![]; // Optional fields
+    let mut normal_field_names = vec![]; // Regular fields
+    let mut opt_field_names = vec![]; // `Option` fields
+    let mut vec_field_names = vec![]; // `Vec` fields
 
     for field in fields.iter() {
         let field_type = field.ty.clone();
@@ -175,6 +196,13 @@ pub fn derive(input: TokenStream) -> TokenStream {
             };
             builder_methods.push(each_builder_method);
         }
+
+        let y = match decide_field_type(&field_type) {
+            FieldType::Normal => { 5 },
+            FieldType::Option => { 5 },
+            FieldType::Normal => { 5 },
+            _ => unreachable!(),
+        };
 
         if !is_option_type(&field_type) {
             let builder_field = quote! {
