@@ -45,7 +45,94 @@ fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
     }
 }
 
-#[proc_macro_derive(Builder)]
+fn has_fn_name(field: &syn::Field) -> bool {
+    get_fn_name(field).is_some()
+}
+
+fn get_fn_name(field: &syn::Field) -> Option<proc_macro2::Literal> {
+    let attrs = field.attrs.clone();
+    let fn_names: Vec<_> = attrs.into_iter().filter_map(|attr| {
+        get_fn_name_from_attr(&attr)
+    }).take(1).collect();
+
+    if fn_names.is_empty() {
+        None
+    } else {
+        Some(fn_names[0].clone())
+    }
+}
+
+fn get_fn_name_from_attr(attr: &syn::Attribute) -> Option<proc_macro2::Literal> {
+    use syn::Attribute;
+
+    match attr {
+        Attribute { path, tokens, .. } => {
+            match path.get_ident() {
+                Some(ident) => {
+                    if ident.to_string() == "builder" {
+                        eprintln!("hello");
+                        let tokens: proc_macro2::TokenStream = tokens.clone();
+                        let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+                        if tokens.len() != 1 {
+                            None
+                        } else {
+                            let tt = tokens[0].clone();
+                            get_fn_name_from_token_tree(&tt)
+                        }
+                    } else {
+                        None
+                    }
+                },
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Option<proc_macro2::Literal> {
+    use proc_macro2::{TokenTree, TokenStream};
+
+    if let TokenTree::Group(group) = tt {
+        let ts: TokenStream = group.stream();
+        let ts: Vec<TokenTree> = ts.into_iter().collect();
+        if ts.len() != 3 {
+            None
+        } else {
+            eprintln!("tokens length");
+            let token1 = ts[0].clone();
+            let token2 = ts[1].clone();
+            let token3 = ts[2].clone();
+
+            if let TokenTree::Ident(inner_ident) = token1 {
+                if inner_ident.to_string() == "each" {
+                    if let TokenTree::Punct(punct) = token2 {
+                        if punct.as_char() == '=' {
+                            if let TokenTree::Literal(lit) = token3 {
+                                eprintln!("{:#?}", lit);
+                                Some(lit)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = input.ident;
@@ -73,6 +160,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
     for field in fields.iter() {
         let field_type = field.ty.clone();
         let field_name = field.ident.clone().expect("expected field to have an ident");
+
+        has_fn_name(&field);
 
         if !is_option_type(&field_type) {
             let builder_field = quote! {
