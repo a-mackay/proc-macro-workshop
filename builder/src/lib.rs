@@ -3,6 +3,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput, Data, Fields, Field};
+use syn::parse::{Parse, ParseStream};
 
 fn is_option_type(ty: &syn::Type) -> bool {
     get_type_within_option(ty).is_some()
@@ -57,14 +58,14 @@ fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
     get_type_within(ty, "Option")
 }
 
-fn get_fn_name(field: &syn::Field) -> Result<Option<proc_macro2::Literal>, String> {
+fn get_fn_name(field: &syn::Field) -> syn::Result<Option<EachFnName>> {
     let attrs = field.attrs.clone();
-    let fn_names: Result<Vec<Option<_>>, String> = attrs.into_iter().map(|attr| {
+    let fn_names: syn::Result<Vec<Option<_>>> = attrs.into_iter().map(|attr| {
         get_fn_name_from_attr(&attr)
     }).take(1).collect();
 
     let fn_names: Vec<Option<_>> = fn_names?;
-    let fn_names: Vec<proc_macro2::Literal> = fn_names.into_iter().filter_map(|opt| opt).collect();
+    let fn_names: Vec<EachFnName> = fn_names.into_iter().filter_map(|opt| opt).collect();
 
     if fn_names.is_empty() {
         Ok(None)
@@ -73,7 +74,47 @@ fn get_fn_name(field: &syn::Field) -> Result<Option<proc_macro2::Literal>, Strin
     }
 }
 
-fn get_fn_name_from_attr(attr: &syn::Attribute) -> Result<Option<proc_macro2::Literal>, String> {
+#[derive(Clone, Debug)]
+struct EachFnNameInner {
+    fn_name: proc_macro2::Literal,
+}
+
+impl Parse for EachFnNameInner {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let each_keyword: proc_macro2::Ident = input.parse()?;
+        if each_keyword.to_string() != "each" {
+            return Err(input.error("todo1"));
+        }
+        let equals_sign: proc_macro2::Punct = input.parse()?;
+        if equals_sign.as_char() != '=' {
+            return Err(input.error("todo2"));
+        }
+        let fn_name: proc_macro2::Literal = input.parse()?;
+        Ok(EachFnNameInner { fn_name })
+    }
+}
+
+
+#[derive(Clone, Debug)]
+struct EachFnName {
+    fn_name: proc_macro2::Literal,
+}
+
+impl Parse for EachFnName {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let token_tree: proc_macro2::TokenTree = input.parse()?;
+        match token_tree {
+            proc_macro2::TokenTree::Group(group) => {
+                let inner_tokens = group.stream();
+                let inner: EachFnNameInner = syn::parse2(inner_tokens)?;
+                Ok(EachFnName { fn_name: inner.fn_name })
+            },
+            _ => Err(input.error("todo")),
+        }
+    }
+}
+
+fn get_fn_name_from_attr(attr: &syn::Attribute) -> syn::Result<Option<EachFnName>> {
     use syn::Attribute;
 
     let Attribute { path, tokens, .. } = attr;
@@ -81,14 +122,18 @@ fn get_fn_name_from_attr(attr: &syn::Attribute) -> Result<Option<proc_macro2::Li
     match path.get_ident() {
         Some(ident) => {
             if ident.to_string() == "builder" {
-                let tokens: proc_macro2::TokenStream = tokens.clone();
-                let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
-                if tokens.len() != 1 {
-                    Err("expected one TokenTree in builder attribute".into())
-                } else {
-                    let tt = tokens[0].clone();
-                    get_fn_name_from_token_tree(&tt).map(|lit| Some(lit))
-                }
+                let tokens = tokens.clone();
+                let each_fn_name: syn::Result<EachFnName> = syn::parse2(tokens);
+                each_fn_name.map(|e| Some(e))
+                // unimplemented!()
+                // let tokens: proc_macro2::TokenStream = tokens.clone();
+                // let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+                // if tokens.len() != 1 {
+                //     Err("expected one TokenTree in builder attribute".into())
+                // } else {
+                //     let tt = tokens[0].clone();
+                //     get_fn_name_from_token_tree(&tt).map(|lit| Some(lit))
+                // }
             } else {
                 Ok(None)
             }
@@ -97,45 +142,45 @@ fn get_fn_name_from_attr(attr: &syn::Attribute) -> Result<Option<proc_macro2::Li
     }
 }
 
-fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Result<proc_macro2::Literal, String> {
-    use proc_macro2::{TokenTree, TokenStream};
+// fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Result<proc_macro2::Literal, String> {
+//     use proc_macro2::{TokenTree, TokenStream};
 
-    if let TokenTree::Group(group) = tt {
-        let ts: TokenStream = group.stream();
-        let ts: Vec<TokenTree> = ts.into_iter().collect();
-        if ts.len() != 3 {
-            Err("builder attribute expected exactly 3 tokens (each, =, \"...\")".into())
-        } else {
-            let token1 = ts[0].clone();
-            let token2 = ts[1].clone();
-            let token3 = ts[2].clone();
+//     if let TokenTree::Group(group) = tt {
+//         let ts: TokenStream = group.stream();
+//         let ts: Vec<TokenTree> = ts.into_iter().collect();
+//         if ts.len() != 3 {
+//             Err("builder attribute expected exactly 3 tokens (each, =, \"...\")".into())
+//         } else {
+//             let token1 = ts[0].clone();
+//             let token2 = ts[1].clone();
+//             let token3 = ts[2].clone();
 
-            if let TokenTree::Ident(inner_ident) = token1 {
-                if inner_ident.to_string() == "each" {
-                    if let TokenTree::Punct(punct) = token2 {
-                        if punct.as_char() == '=' {
-                            if let TokenTree::Literal(lit) = token3 {
-                                Ok(lit)
-                            } else {
-                                Err("builder attribute 3rd token should be a string literal".into())
-                            }
-                        } else {
-                            Err("builder attribute 2nd token should be '='".into())
-                        }
-                    } else {
-                        Err("builder attribute 2nd token should be TokenTree::Punct '='".into())
-                    }
-                } else {
-                    Err("expected `builder(each = \"...\")`".into())
-                }
-            } else {
-                Err("builder attribute 1st token should be TokenTree::Ident 'each'".into())
-            }
-        }
-    } else {
-        Err("builder attribute should be a TokenTree::Group".into())
-    }
-}
+//             if let TokenTree::Ident(inner_ident) = token1 {
+//                 if inner_ident.to_string() == "each" {
+//                     if let TokenTree::Punct(punct) = token2 {
+//                         if punct.as_char() == '=' {
+//                             if let TokenTree::Literal(lit) = token3 {
+//                                 Ok(lit)
+//                             } else {
+//                                 Err("builder attribute 3rd token should be a string literal".into())
+//                             }
+//                         } else {
+//                             Err("builder attribute 2nd token should be '='".into())
+//                         }
+//                     } else {
+//                         Err("builder attribute 2nd token should be TokenTree::Punct '='".into())
+//                     }
+//                 } else {
+//                     Err("expected `builder(each = \"...\")`".into())
+//                 }
+//             } else {
+//                 Err("builder attribute 1st token should be TokenTree::Ident 'each'".into())
+//             }
+//         }
+//     } else {
+//         Err("builder attribute should be a TokenTree::Group".into())
+//     }
+// }
 
 #[derive(Clone, Debug)]
 enum FieldType {
@@ -163,13 +208,13 @@ fn decide_field_type(ty: &syn::Type) -> FieldType {
     }
 }
 
-fn field_to_code_features(field: &syn::Field) -> Result<CodeFeatures, String> {
+fn field_to_code_features(field: &syn::Field) -> syn::Result<CodeFeatures> {
     let field_type = field.ty.clone();
     let field_name = field.ident.clone().expect("expected field to have an ident");
 
     let user_defined_each_fn_name = get_fn_name(&field)?;
-    let user_defined_each_fn_name_str: Option<String> = user_defined_each_fn_name.clone().map(|lit| {
-        lit.to_string().chars().filter(|&c| c != '\"').collect()
+    let user_defined_each_fn_name_str: Option<String> = user_defined_each_fn_name.clone().map(|e: EachFnName| {
+        e.fn_name.to_string().chars().filter(|&c| c != '\"').collect()
     });
     let create_builder_method = user_defined_each_fn_name.is_none() || user_defined_each_fn_name_str != Some(field_name.to_string());
 
@@ -284,7 +329,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut opt_field_names = vec![]; // `Option` fields
     let mut vec_field_names = vec![]; // `Vec` fields
 
-    let mut macro_errs = vec![];
+    let mut macro_errs: Vec<proc_macro2::TokenStream> = vec![];
 
     for field in fields.iter() {
         match field_to_code_features(field) {
@@ -305,10 +350,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             },
             Err(e) => {
-                let err = quote! {
-                    compile_error!(#e)
-                };
-                macro_errs.push(err)
+                // let err = quote! {
+                //     compile_error!(#e)
+                // };
+                macro_errs.push(e.to_compile_error())
             }
         }
     }
