@@ -170,12 +170,12 @@ fn field_to_code_features(field: &syn::Field) -> syn::Result<CodeFeatures> {
     let code_features = match decided_field_type {
         FieldType::Normal => {
             let builder_field = quote! {
-                #field_name: Option<#field_type>
+                #field_name: std::option::Option<#field_type>
             };
 
             let builder_method = quote! {
                 fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
-                    self.#field_name = Some(#field_name);
+                    self.#field_name = std::option::Option::Some(#field_name);
                     self
                 }
             };
@@ -197,7 +197,7 @@ fn field_to_code_features(field: &syn::Field) -> syn::Result<CodeFeatures> {
 
             let builder_method = quote! {
                 fn #field_name(&mut self, #field_name: #inner_type) -> &mut Self {
-                    self.#field_name = Some(#field_name);
+                    self.#field_name = std::option::Option::Some(#field_name);
                     self
                 }
             };
@@ -213,12 +213,12 @@ fn field_to_code_features(field: &syn::Field) -> syn::Result<CodeFeatures> {
         },
         FieldType::Vec => {
             let builder_field = quote! {
-                #field_name: Option<#field_type>
+                #field_name: std::option::Option<#field_type>
             };
 
             let builder_method = quote! {
                 fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
-                    self.#field_name = Some(#field_name);
+                    self.#field_name = std::option::Option::Some(#field_name);
                     self
                 }
             };
@@ -297,31 +297,31 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #builder_name {
             fn new() -> Self {
                 Self {
-                    #( #normal_field_names: None, )*
-                    #( #opt_field_names: None, )*
-                    #( #vec_field_names: None, )*
+                    #( #normal_field_names: std::option::Option::None, )*
+                    #( #opt_field_names: std::option::Option::None, )*
+                    #( #vec_field_names: std::option::Option::None, )*
                 }
             }
 
             #( #builder_methods )*
         }
 
-        fn optvec_to_vec<T>(optvec: Option<Vec<T>>) -> Vec<T> {
+        fn optvec_to_vec<T>(optvec: std::option::Option<std::vec::Vec<T>>) -> std::vec::Vec<T> {
             match optvec {
-                Some(vec) => vec,
-                None => vec![],
+                std::option::Option::Some(vec) => vec,
+                std::option::Option::None => std::vec![],
             }
         }
 
         impl #builder_name {
-            fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
+            fn build(&mut self) -> std::result::Result<#struct_name, std::boxed::Box<dyn std::error::Error>> {
                 #(
                     if self.#normal_field_names.is_none() {
-                        let msg = format!("Missing field {}", stringify!(#normal_field_names));
-                        return Err(Box::from(msg))
+                        let msg = std::format!("Missing field {}", std::stringify!(#normal_field_names));
+                        return std::result::Result::Err(std::boxed::Box::from(msg))
                     }
                 );*
-                Ok(#struct_name {
+                std::result::Result::Ok(#struct_name {
                     #( #normal_field_names: self.#normal_field_names.clone().unwrap(), )*
                     #( #opt_field_names: self.#opt_field_names.clone(), )*
                     #( #vec_field_names: optvec_to_vec(self.#vec_field_names.clone()), )*
