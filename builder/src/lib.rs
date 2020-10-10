@@ -57,20 +57,23 @@ fn get_type_within_option(ty: &syn::Type) -> Option<syn::Type> {
     get_type_within(ty, "Option")
 }
 
-fn get_fn_name(field: &syn::Field) -> Option<proc_macro2::Literal> {
+fn get_fn_name(field: &syn::Field) -> Result<Option<proc_macro2::Literal>, String> {
     let attrs = field.attrs.clone();
-    let fn_names: Vec<_> = attrs.into_iter().filter_map(|attr| {
+    let fn_names: Result<Vec<Option<_>>, String> = attrs.into_iter().map(|attr| {
         get_fn_name_from_attr(&attr)
     }).take(1).collect();
 
+    let fn_names: Vec<Option<_>> = fn_names?;
+    let fn_names: Vec<proc_macro2::Literal> = fn_names.into_iter().filter_map(|opt| opt).collect();
+
     if fn_names.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(fn_names[0].clone())
+        Ok(Some(fn_names[0].clone()))
     }
 }
 
-fn get_fn_name_from_attr(attr: &syn::Attribute) -> Option<proc_macro2::Literal> {
+fn get_fn_name_from_attr(attr: &syn::Attribute) -> Result<Option<proc_macro2::Literal>, String> {
     use syn::Attribute;
 
     let Attribute { path, tokens, .. } = attr;
@@ -81,27 +84,27 @@ fn get_fn_name_from_attr(attr: &syn::Attribute) -> Option<proc_macro2::Literal> 
                 let tokens: proc_macro2::TokenStream = tokens.clone();
                 let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
                 if tokens.len() != 1 {
-                    None
+                    Err("expected one TokenTree in builder attribute".into())
                 } else {
                     let tt = tokens[0].clone();
-                    get_fn_name_from_token_tree(&tt)
+                    get_fn_name_from_token_tree(&tt).map(|lit| Some(lit))
                 }
             } else {
-                None
+                Ok(None)
             }
         },
-        _ => None,
+        _ => Ok(None),
     }
 }
 
-fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Option<proc_macro2::Literal> {
+fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Result<proc_macro2::Literal, String> {
     use proc_macro2::{TokenTree, TokenStream};
 
     if let TokenTree::Group(group) = tt {
         let ts: TokenStream = group.stream();
         let ts: Vec<TokenTree> = ts.into_iter().collect();
         if ts.len() != 3 {
-            None
+            Err("builder attribute expected exactly 3 tokens (each, =, \"...\")".into())
         } else {
             let token1 = ts[0].clone();
             let token2 = ts[1].clone();
@@ -112,28 +115,29 @@ fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Option<proc_macro
                     if let TokenTree::Punct(punct) = token2 {
                         if punct.as_char() == '=' {
                             if let TokenTree::Literal(lit) = token3 {
-                                Some(lit)
+                                Ok(lit)
                             } else {
-                                None
+                                Err("builder attribute 3rd token should be a string literal".into())
                             }
                         } else {
-                            None
+                            Err("builder attribute 2nd token should be '='".into())
                         }
                     } else {
-                        None
+                        Err("builder attribute 2nd token should be TokenTree::Punct '='".into())
                     }
                 } else {
-                    None
+                    Err("expected `builder(each = \"...\")`".into())
                 }
             } else {
-                None
+                Err("builder attribute 1st token should be TokenTree::Ident 'each'".into())
             }
         }
     } else {
-        None
+        Err("builder attribute should be a TokenTree::Group".into())
     }
 }
 
+#[derive(Clone, Debug)]
 enum FieldType {
     Normal,
     Vec,
@@ -141,8 +145,12 @@ enum FieldType {
 }
 
 struct CodeFeatures {
+    field_name: syn::Ident,
     builder_field: proc_macro2::TokenStream,
     builder_method: proc_macro2::TokenStream,
+    field_type: FieldType,
+    create_builder_method: bool,
+    each_builder_method: Option<proc_macro2::TokenStream>,
 }
 
 fn decide_field_type(ty: &syn::Type) -> FieldType {
@@ -153,6 +161,103 @@ fn decide_field_type(ty: &syn::Type) -> FieldType {
         (false, false) => FieldType::Normal,
         (true, true) => unreachable!(),
     }
+}
+
+fn field_to_code_features(field: &syn::Field) -> Result<CodeFeatures, String> {
+    let field_type = field.ty.clone();
+    let field_name = field.ident.clone().expect("expected field to have an ident");
+
+    let user_defined_each_fn_name = get_fn_name(&field)?;
+    let user_defined_each_fn_name_str: Option<String> = user_defined_each_fn_name.clone().map(|lit| {
+        lit.to_string().chars().filter(|&c| c != '\"').collect()
+    });
+    let create_builder_method = user_defined_each_fn_name.is_none() || user_defined_each_fn_name_str != Some(field_name.to_string());
+
+    let each_builder_method = match user_defined_each_fn_name_str {
+        Some(fn_name) => {
+            let fn_name = format_ident!("{}", fn_name);
+            let inner_type = get_type_within_vec(&field_type).expect("Expected a type like Vec<...> for 'each = ...' attribute");
+            Some(quote! {
+                fn #fn_name(&mut self, item: #inner_type) -> &mut Self {
+                    let items = self.#field_name.get_or_insert(vec![]);
+                    items.push(item);
+                    self
+                }
+            })
+        },
+        _ => None,
+    };
+
+    let decided_field_type = decide_field_type(&field_type);
+
+    let code_features = match decided_field_type {
+        FieldType::Normal => {
+            let builder_field = quote! {
+                #field_name: Option<#field_type>
+            };
+
+            let builder_method = quote! {
+                fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
+                    self.#field_name = Some(#field_name);
+                    self
+                }
+            };
+
+            CodeFeatures {
+                field_name,
+                builder_field,
+                builder_method,
+                field_type: decided_field_type,
+                create_builder_method,
+                each_builder_method,
+            }
+        },
+        FieldType::Option => {
+            let inner_type = get_type_within_option(&field_type).unwrap();
+            let builder_field = quote! {
+                #field_name: #field_type
+            };
+
+            let builder_method = quote! {
+                fn #field_name(&mut self, #field_name: #inner_type) -> &mut Self {
+                    self.#field_name = Some(#field_name);
+                    self
+                }
+            };
+
+            CodeFeatures {
+                field_name,
+                builder_field,
+                builder_method,
+                field_type: decided_field_type,
+                create_builder_method,
+                each_builder_method,
+            }
+        },
+        FieldType::Vec => {
+            let builder_field = quote! {
+                #field_name: Option<#field_type>
+            };
+
+            let builder_method = quote! {
+                fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
+                    self.#field_name = Some(#field_name);
+                    self
+                }
+            };
+
+            CodeFeatures {
+                field_name,
+                builder_field,
+                builder_method,
+                field_type: decided_field_type,
+                create_builder_method,
+                each_builder_method,
+            }
+        },
+    };
+
+    Ok(code_features)
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -179,97 +284,38 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let mut opt_field_names = vec![]; // `Option` fields
     let mut vec_field_names = vec![]; // `Vec` fields
 
+    let mut macro_errs = vec![];
+
     for field in fields.iter() {
-        let field_type = field.ty.clone();
-        let field_name = field.ident.clone().expect("expected field to have an ident");
+        match field_to_code_features(field) {
+            Ok(CodeFeatures { field_name, builder_field, builder_method, field_type, create_builder_method, each_builder_method }) => {
+                match field_type {
+                    FieldType::Normal => normal_field_names.push(field_name),
+                    FieldType::Option => opt_field_names.push(field_name),
+                    FieldType::Vec => vec_field_names.push(field_name),
+                };
 
-        let user_defined_each_fn_name = get_fn_name(&field);
-        let user_defined_each_fn_name_str: Option<String> = user_defined_each_fn_name.clone().map(|lit| {
-            lit.to_string().chars().filter(|&c| c != '\"').collect()
-        });
-        let create_builder_method = user_defined_each_fn_name.is_none() || user_defined_each_fn_name_str != Some(field_name.to_string());
-
-        if let Some(fn_name) = user_defined_each_fn_name_str {
-            let fn_name = format_ident!("{}", fn_name);
-            let inner_type = get_type_within_vec(&field_type).expect("Expected a type like Vec<...> for 'each = ...' attribute");
-            let each_builder_method = quote! {
-                fn #fn_name(&mut self, item: #inner_type) -> &mut Self {
-                    let items = self.#field_name.get_or_insert(vec![]);
-                    items.push(item);
-                    self
+                if let Some(each_builder_method) = each_builder_method {
+                    builder_methods.push(each_builder_method);
                 }
-            };
-            builder_methods.push(each_builder_method);
-        }
 
-        let CodeFeatures { builder_field, builder_method } = match decide_field_type(&field_type) {
-            FieldType::Normal => {
-                let builder_field = quote! {
-                    #field_name: Option<#field_type>
-                };
-
-                let builder_method = quote! {
-                    fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
-                        self.#field_name = Some(#field_name);
-                        self
-                    }
-                };
-
-                normal_field_names.push(field_name);
-
-                CodeFeatures {
-                    builder_field,
-                    builder_method,
+                builder_fields.push(builder_field);
+                if create_builder_method {
+                    builder_methods.push(builder_method);
                 }
             },
-            FieldType::Option => {
-                let inner_type = get_type_within_option(&field_type).unwrap();
-                let builder_field = quote! {
-                    #field_name: #field_type
+            Err(e) => {
+                let err = quote! {
+                    compile_error!(#e)
                 };
-
-                let builder_method = quote! {
-                    fn #field_name(&mut self, #field_name: #inner_type) -> &mut Self {
-                        self.#field_name = Some(#field_name);
-                        self
-                    }
-                };
-
-                opt_field_names.push(field_name);
-
-                CodeFeatures {
-                    builder_field,
-                    builder_method,
-                }
-            },
-            FieldType::Vec => {
-                let builder_field = quote! {
-                    #field_name: Option<#field_type>
-                };
-
-                let builder_method = quote! {
-                    fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
-                        self.#field_name = Some(#field_name);
-                        self
-                    }
-                };
-
-                vec_field_names.push(field_name);
-
-                CodeFeatures {
-                    builder_field,
-                    builder_method,
-                }
-            },
-        };
-
-        builder_fields.push(builder_field);
-        if create_builder_method {
-            builder_methods.push(builder_method);
+                macro_errs.push(err)
+            }
         }
     }
 
     let output = quote! {
+        #( #macro_errs; )*
+
         pub struct #builder_name {
             #(#builder_fields,)*
         }
