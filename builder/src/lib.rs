@@ -75,55 +75,36 @@ fn get_fn_name(field: &syn::Field) -> syn::Result<Option<EachFnName>> {
 }
 
 #[derive(Clone, Debug)]
-struct EachFnNameInner {
-    fn_name: proc_macro2::Literal,
-}
-
-impl Parse for EachFnNameInner {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let each_keyword: proc_macro2::Ident = input.parse()?;
-        if each_keyword.to_string() != "each" {
-            return Err(input.error("todo1"));
-        }
-        let equals_sign: proc_macro2::Punct = input.parse()?;
-        if equals_sign.as_char() != '=' {
-            return Err(input.error("todo2"));
-        }
-        let fn_name: proc_macro2::Literal = input.parse()?;
-        Ok(EachFnNameInner { fn_name })
-    }
-}
-
-
-#[derive(Clone, Debug)]
 struct EachFnName {
     fn_name: proc_macro2::Literal,
 }
 
 impl Parse for EachFnName {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let token_tree: proc_macro2::TokenTree = input.parse()?;
-        match token_tree {
-            proc_macro2::TokenTree::Group(group) => {
-                let inner_tokens = group.stream();
-                let inner: EachFnNameInner = syn::parse2(inner_tokens)?;
-                Ok(EachFnName { fn_name: inner.fn_name })
-            },
-            _ => Err(input.error("todo")),
+        let original_error = input.error("expected `builder(each = \"...\")`");
+
+        let each_keyword: proc_macro2::Ident = input.parse()?;
+        if each_keyword.to_string() != "each" {
+            return Err(original_error);
         }
+        let equals_sign: proc_macro2::Punct = input.parse()?;
+        if equals_sign.as_char() != '=' {
+            return Err(original_error);
+        }
+        let fn_name: proc_macro2::Literal = input.parse()?;
+        Ok(Self { fn_name })
     }
 }
 
 fn get_fn_name_from_attr(attr: &syn::Attribute) -> syn::Result<Option<EachFnName>> {
     use syn::Attribute;
 
-    let Attribute { path, tokens, .. } = attr;
+    let Attribute { path, .. } = attr;
 
     match path.get_ident() {
         Some(ident) => {
             if ident.to_string() == "builder" {
-                let tokens = tokens.clone();
-                let each_fn_name: syn::Result<EachFnName> = syn::parse2(tokens);
+                let each_fn_name: syn::Result<EachFnName> = attr.parse_args();
                 each_fn_name.map(|e| Some(e))
             } else {
                 Ok(None)
