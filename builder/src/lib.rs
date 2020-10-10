@@ -140,6 +140,11 @@ enum FieldType {
     Option,
 }
 
+struct CodeFeatures {
+    builder_field: proc_macro2::TokenStream,
+    builder_method: proc_macro2::TokenStream,
+}
+
 fn decide_field_type(ty: &syn::Type) -> FieldType {
     let results = (is_option_type(ty), is_vec_type(ty));
     match results {
@@ -182,7 +187,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let user_defined_each_fn_name_str: Option<String> = user_defined_each_fn_name.clone().map(|lit| {
             lit.to_string().chars().filter(|&c| c != '\"').collect()
         });
-        // eprintln!("{:?}", field_name.to_string());
         let create_builder_method = user_defined_each_fn_name.is_none() || user_defined_each_fn_name_str != Some(field_name.to_string());
 
         if let Some(fn_name) = user_defined_each_fn_name_str {
@@ -190,55 +194,78 @@ pub fn derive(input: TokenStream) -> TokenStream {
             let inner_type = get_type_within_vec(&field_type).expect("Expected a type like Vec<...> for 'each = ...' attribute");
             let each_builder_method = quote! {
                 fn #fn_name(&mut self, item: #inner_type) -> &mut Self {
-                    self.#field_name.push(item);
+                    let items = self.#field_name.get_or_insert(vec![]);
+                    items.push(item);
                     self
                 }
             };
             builder_methods.push(each_builder_method);
         }
 
-        let y = match decide_field_type(&field_type) {
-            FieldType::Normal => { 5 },
-            FieldType::Option => { 5 },
-            FieldType::Normal => { 5 },
-            _ => unreachable!(),
+        let CodeFeatures { builder_field, builder_method } = match decide_field_type(&field_type) {
+            FieldType::Normal => {
+                let builder_field = quote! {
+                    #field_name: Option<#field_type>
+                };
+
+                let builder_method = quote! {
+                    fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
+                        self.#field_name = Some(#field_name);
+                        self
+                    }
+                };
+
+                normal_field_names.push(field_name);
+
+                CodeFeatures {
+                    builder_field,
+                    builder_method,
+                }
+            },
+            FieldType::Option => {
+                let inner_type = get_type_within_option(&field_type).unwrap();
+                let builder_field = quote! {
+                    #field_name: #field_type
+                };
+
+                let builder_method = quote! {
+                    fn #field_name(&mut self, #field_name: #inner_type) -> &mut Self {
+                        self.#field_name = Some(#field_name);
+                        self
+                    }
+                };
+
+                opt_field_names.push(field_name);
+
+                CodeFeatures {
+                    builder_field,
+                    builder_method,
+                }
+            },
+            FieldType::Vec => {
+                let builder_field = quote! {
+                    #field_name: Option<#field_type>
+                };
+
+                let builder_method = quote! {
+                    fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
+                        self.#field_name = Some(#field_name);
+                        self
+                    }
+                };
+
+                vec_field_names.push(field_name);
+
+                CodeFeatures {
+                    builder_field,
+                    builder_method,
+                }
+            },
         };
 
-        if !is_option_type(&field_type) {
-            let builder_field = quote! {
-                #field_name: Option<#field_type>
-            };
-            builder_fields.push(builder_field);
-
-            let builder_method = quote! {
-                fn #field_name(&mut self, #field_name: #field_type) -> &mut Self {
-                    self.#field_name = Some(#field_name);
-                    self
-                }
-            };
-            if create_builder_method {
-                builder_methods.push(builder_method);
-            }
-
-            man_field_names.push(field_name);
-        } else {
-            let inner_type = get_type_within_option(&field_type).unwrap();
-            let builder_field = quote! {
-                #field_name: #field_type
-            };
-            builder_fields.push(builder_field);
-
-            let builder_method = quote! {
-                fn #field_name(&mut self, #field_name: #inner_type) -> &mut Self {
-                    self.#field_name = Some(#field_name);
-                    self
-                }
-            };
-            if create_builder_method {
-                builder_methods.push(builder_method);
-            }
-
-            opt_field_names.push(field_name);
+        builder_fields.push(builder_field);
+        if create_builder_method {
+            builder_methods.push(builder_method);
         }
     }
 
@@ -250,25 +277,34 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #builder_name {
             fn new() -> Self {
                 Self {
-                    #( #man_field_names: None, )*
+                    #( #normal_field_names: None, )*
                     #( #opt_field_names: None, )*
+                    #( #vec_field_names: None, )*
                 }
             }
 
             #( #builder_methods )*
         }
 
+        fn optvec_to_vec<T>(optvec: Option<Vec<T>>) -> Vec<T> {
+            match optvec {
+                Some(vec) => vec,
+                None => vec![],
+            }
+        }
+
         impl #builder_name {
             fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
                 #(
-                    if self.#man_field_names.is_none() {
-                        let msg = format!("Missing field {}", stringify!(#man_field_names));
+                    if self.#normal_field_names.is_none() {
+                        let msg = format!("Missing field {}", stringify!(#normal_field_names));
                         return Err(Box::from(msg))
                     }
                 );*
                 Ok(#struct_name {
-                    #( #man_field_names: self.#man_field_names.clone().unwrap(), )*
+                    #( #normal_field_names: self.#normal_field_names.clone().unwrap(), )*
                     #( #opt_field_names: self.#opt_field_names.clone(), )*
+                    #( #vec_field_names: optvec_to_vec(self.#vec_field_names.clone()), )*
                 })
             }
         }
