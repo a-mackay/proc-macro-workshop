@@ -125,15 +125,6 @@ fn get_fn_name_from_attr(attr: &syn::Attribute) -> syn::Result<Option<EachFnName
                 let tokens = tokens.clone();
                 let each_fn_name: syn::Result<EachFnName> = syn::parse2(tokens);
                 each_fn_name.map(|e| Some(e))
-                // unimplemented!()
-                // let tokens: proc_macro2::TokenStream = tokens.clone();
-                // let tokens: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
-                // if tokens.len() != 1 {
-                //     Err("expected one TokenTree in builder attribute".into())
-                // } else {
-                //     let tt = tokens[0].clone();
-                //     get_fn_name_from_token_tree(&tt).map(|lit| Some(lit))
-                // }
             } else {
                 Ok(None)
             }
@@ -141,46 +132,6 @@ fn get_fn_name_from_attr(attr: &syn::Attribute) -> syn::Result<Option<EachFnName
         _ => Ok(None),
     }
 }
-
-// fn get_fn_name_from_token_tree(tt: &proc_macro2::TokenTree) -> Result<proc_macro2::Literal, String> {
-//     use proc_macro2::{TokenTree, TokenStream};
-
-//     if let TokenTree::Group(group) = tt {
-//         let ts: TokenStream = group.stream();
-//         let ts: Vec<TokenTree> = ts.into_iter().collect();
-//         if ts.len() != 3 {
-//             Err("builder attribute expected exactly 3 tokens (each, =, \"...\")".into())
-//         } else {
-//             let token1 = ts[0].clone();
-//             let token2 = ts[1].clone();
-//             let token3 = ts[2].clone();
-
-//             if let TokenTree::Ident(inner_ident) = token1 {
-//                 if inner_ident.to_string() == "each" {
-//                     if let TokenTree::Punct(punct) = token2 {
-//                         if punct.as_char() == '=' {
-//                             if let TokenTree::Literal(lit) = token3 {
-//                                 Ok(lit)
-//                             } else {
-//                                 Err("builder attribute 3rd token should be a string literal".into())
-//                             }
-//                         } else {
-//                             Err("builder attribute 2nd token should be '='".into())
-//                         }
-//                     } else {
-//                         Err("builder attribute 2nd token should be TokenTree::Punct '='".into())
-//                     }
-//                 } else {
-//                     Err("expected `builder(each = \"...\")`".into())
-//                 }
-//             } else {
-//                 Err("builder attribute 1st token should be TokenTree::Ident 'each'".into())
-//             }
-//         }
-//     } else {
-//         Err("builder attribute should be a TokenTree::Group".into())
-//     }
-// }
 
 #[derive(Clone, Debug)]
 enum FieldType {
@@ -350,9 +301,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             },
             Err(e) => {
-                // let err = quote! {
-                //     compile_error!(#e)
-                // };
                 macro_errs.push(e.to_compile_error())
             }
         }
